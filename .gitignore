@@ -1,0 +1,31 @@
+# ===== 游戏解包 / 反编译内容（禁止上传）=====
+mastermemory.bytes
+*Mastermemory.bytes
+sv_card_meta.json
+sv2Warchess.dll
+save_decrypt.py
+svwb-probe/_l2d/
+svwb-probe/gamedata/card-art/
+*.bytes
+*.dll
+*decompile*
+*dump.cs*
+
+# ===== 运行时 / 依赖 =====
+python/
+node/
+wheels/
+__pycache__/
+*.pyc
+logs/
+_copies/
+
+# ===== 用户数据 =====
+user_decks.json
+user_deck.json
+decks.json
+companion.json
+pet_config.json
+.env
+ai_settings.json
+*.log
