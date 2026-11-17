@@ -616,12 +616,31 @@ class SettingsDialog:
             pass
 
 
+def _console_show_request():
+    folder = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "影之诗助手")
+    return os.path.join(folder, "console-show.request")
+
+
+def request_console_show():
+    try:
+        path = _console_show_request()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf8") as output:
+            output.write(str(time.time()))
+        return True
+    except OSError:
+        return False
+
+
 class App:
     def __init__(self, root):
         self.root = root
         self.procs = {}
         self.labels = {}
-        self._last_sweep = 0
+        self._last_sweep = time.time()
+        self._sweep_lock = threading.Lock()
+        self._orphan_cleanup_done = threading.Event()
+        self._start_generation = {}
         self.boot_at = time.time()   # 启动时刻：用于忽略启动阶段的假关闭请求
         self.locked = False
         self._drag = None
@@ -722,7 +741,7 @@ class App:
 
         vrow = tk.Frame(self.pad, bg=BG)
         vrow.pack()
-        tk.Label(vrow, text="v1.1.3  控制台", bg=BG, fg=GOLD2,
+        tk.Label(vrow, text="v1.1.4  控制台", bg=BG, fg=GOLD2,
                  font=self.f_s).pack(side="left")
         tk.Button(vrow, text="⚙ 设置", command=self.open_console_settings,
                   bg=BG, fg=GOLD, relief="flat", bd=0, padx=6,
@@ -793,13 +812,6 @@ class App:
                 _bind_drag(c)
         _bind_drag(self.frame)
 
-        try:
-            n, b = cleanup.sweep()
-            if n:
-                print(f"启动清理：删除 {n} 个超期截图，释放 {b/1048576:.1f} MB")
-        except Exception:
-            pass
-
         self._apply_style()
         # 从任务栏恢复时重新应用样式（之前忘了绑定，导致白框）
         root.bind("<Map>", self._on_map)
@@ -814,10 +826,42 @@ class App:
         if not self.tray_ok:
             print("（托盘不可用：✕ 将退化为最小化到任务栏）")
         self._tick()
-        self._kill_orphans()      # 先清掉上次遗留的子进程，避免重复窗口
-        self._new_session()       # 新会话：清空往次战绩（强杀导致没清时也能兜住）
-        # 用户 2026-10-21：按上次关闭时的状态恢复；第一次默认全部关闭。
+        # Show a responsive console before CIM enumeration / old image cleanup.
+        threading.Thread(target=self._startup_housekeeping, daemon=True,
+                         name="console-startup-cleanup").start()
+        self._new_session()
+        self.root.after_idle(self._restore_after_startup)
+        import subtitle_source
+        subtitle_source.watch_live(self.root)
+
+    def _startup_housekeeping(self):
+        try:
+            self._kill_orphans()
+        finally:
+            self._orphan_cleanup_done.set()
+        self._sweep_background()
+
+    def _restore_after_startup(self):
+        # Only the Huanjing windows are orphan-cleanup targets. The card
+        # tracker and pet can start immediately without waiting for PowerShell.
+        if self.tab == "hj" and not self._orphan_cleanup_done.is_set():
+            self.root.after(50, self._restore_after_startup)
+            return
         self._restore_running()
+
+    def _sweep_background(self):
+        if not self._sweep_lock.acquire(False):
+            return
+        def work():
+            try:
+                n, b = cleanup.sweep()
+                if n:
+                    print(f"截图清理：删除 {n} 个超期截图，释放 {b/1048576:.1f} MB")
+            except Exception as exc:
+                print("截图清理失败：", exc)
+            finally:
+                self._sweep_lock.release()
+        threading.Thread(target=work, daemon=True, name="screenshot-cleanup").start()
 
     # ---------------- 位置 ----------------
     def _load_pos(self, sw, sh):
@@ -1226,7 +1270,9 @@ class App:
                   font=self.f_s, cursor="hand2").pack(side="right",
                                                       padx=(0, 4))
         self._refresh_deck_status()
-        # v1.1.3：不提供卡牌台词字幕（阉割版）
+        import subtitle_source
+        subtitle_source.build_panel(p, self.f_s, bg=BG2, fg=FG, dim=DIM,
+                                    gold=GOLD, green=GREEN)
 
     # ---------------- 卡组（导入卡组码 / 查看 / 切换当前） ----------------
     def _toplevel(self, title, geometry=None, alpha=0.9):
@@ -1705,15 +1751,19 @@ class App:
     def open_tracker_settings(self):
         import deck_tracker as tracker
         cfg = tracker.window_settings()
-        dlg = SettingsDialog(self.root, "记牌器设置", 420, 355)
+        dlg = SettingsDialog(self.root, "记牌器设置", 440, 430)
         dlg.slider("窗口宽度", "width", 260, 900, 10, cfg["width"], "{:.0f}")
         dlg.slider("窗口高度", "height", 200, 1080, 10, cfg["height"], "{:.0f}")
         dlg.check("按内容自动调整高度", "auto", cfg["auto"])
         dlg.slider("字号", "font", 7, 20, 1, cfg["font"], "{:.0f}")
         dlg.check("锁定记牌器（鼠标穿透，取消可解锁）", "locked", cfg["locked"])
+        dlg.check("显示敌方公开牌", "show_public", cfg["show_public"])
+        dlg.check("显示自己已打出牌", "show_played", cfg["show_played"])
         def apply():
             options = {k: int(dlg.vars[k].get()) for k in ("width", "height", "font")}
             options["auto"] = bool(dlg.vars["auto"].get())
+            for key in ("show_public", "show_played"):
+                options[key] = bool(dlg.vars[key].get())
             options["locked"] = bool(dlg.vars["locked"].get())
             save_json(tracker.WINDOW_SETTINGS, options)
             if tracker._OPEN[0] is not None:
@@ -1755,7 +1805,8 @@ class App:
             self.procs["companion"] = subprocess.Popen(
                 [sys.executable, "-u",
                  os.path.join(HERE, "run_companion.py")],
-                stdout=log, stderr=subprocess.STDOUT, cwd=HERE)
+                stdout=log, stderr=subprocess.STDOUT, cwd=HERE,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             print("AI 陪玩已启动")
         except Exception as e:
             print("AI 陪玩启动失败：%s" % e)
@@ -1896,6 +1947,7 @@ class App:
         ⚠️ frida_live 不能 taskkill：agent 挂在游戏进程里，强杀会让游戏崩。
         先写停止标记让它自己 unload，等不到才强杀兜底。
         """
+        self._start_generation[key] = self._start_generation.get(key, 0) + 1
         p = self.procs.pop(key, None)
         if key == "frida":
             self._stop_frida(p)
@@ -1987,6 +2039,13 @@ class App:
                  "--timeout", "10800", "--delay", delay], HERE)
 
     def start_one(self, key, pause=0.0):
+        if key in ("overlay", "panel", "leader") and not self._orphan_cleanup_done.is_set():
+            generation = self._start_generation.get(key, 0)
+            def retry():
+                if generation == self._start_generation.get(key, 0) and self.tab == "hj":
+                    self.start_one(key, pause)
+            self.root.after(100, retry)
+            return
         if key == "frida":
             self._ensure_frida()
             return
@@ -1997,7 +2056,13 @@ class App:
             return
         args, cwd = self._cmd_for(key)
         if pause:
-            time.sleep(pause)
+            generation = self._start_generation.get(key, 0)
+            tab = self.tab
+            def delayed():
+                if self.tab == tab and generation == self._start_generation.get(key, 0):
+                    self.start_one(key)
+            self.root.after(round(pause * 1000), delayed)
+            return
         self._spawn(key, args, cwd)
         self._update_status()
 
@@ -2022,9 +2087,11 @@ class App:
         tab = str(cs.get("tab") or "hj")
         order = (("overlay", 0.0), ("panel", 1.0), ("leader", 0.3), ("judge", 0.5))
         if tab == "hj":
+            delay = 0.0
             for key, pause in order:
                 if st.get(key):
-                    self.start_one(key, pause=pause)
+                    delay += pause
+                    self.start_one(key, pause=delay)
         elif st.get("deck"):
             self.open_deck_tracker()
         # AI 陪玩（宠物）：上次开着就一起恢复（属于影之诗模块）
@@ -2246,7 +2313,17 @@ class App:
             txt = "状态：" + ("运行中" if alive else "已停止")
             lbl.config(text=txt, fg=GREEN if alive else RED)
 
+    def _check_show_request(self):
+        path = _console_show_request()
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                self.restore_from_tray()
+        except OSError:
+            pass
+
     def _tick(self):
+        self._check_show_request()
         self._update_status()
         self._apply_style()
         # AI 陪玩状态：已启用/未启用（读 companion 配置，设置改完自动刷新）
@@ -2258,7 +2335,8 @@ class App:
                 model = str(ac.get("model") or "").strip()
                 label = " / ".join(x for x in (prov, model) if x)
                 self.ai_status.config(
-                    text="已启用 · %s" % (label or "未选择模型"), fg=GREEN)
+                    text=("运行中 · " if self.procs.get("companion") is not None and self.procs["companion"].poll() is None
+                          else "已配置 · 陪玩已关闭 · ") + (label or "未选择模型"), fg=GREEN)
             else:
                 self.ai_status.config(text="未启用", fg=DIM)
         except Exception:
@@ -2286,7 +2364,6 @@ class App:
                     self._ensure_frida()
             except Exception:
                 pass
-            self._last_sweep = now
         if getattr(self, "_last_snapshot_cleanup", 0) == 0:
             self._last_snapshot_cleanup = now
             cleanup_snapshots()
@@ -2295,12 +2372,7 @@ class App:
             cleanup_snapshots()
         if now - self._last_sweep > 600:
             self._last_sweep = now
-            try:
-                n, b = cleanup.sweep()
-                if n:
-                    print(f"定时清理：删除 {n} 个超期截图，释放 {b/1048576:.1f} MB")
-            except Exception:
-                pass
+            self._sweep_background()
         self.root.after(2000, self._tick)
 
     # ---------------- 设置 ----------------
@@ -2572,7 +2644,7 @@ class App:
                  bg=BG, fg=DIM, font=dlg.f_s, justify="left", anchor="w",
                  wraplength=430).pack(fill="x", pady=(2, 0))
 
-        dlg.section("显卡（Live2D 宠物）")
+        dlg.section("显卡（Live2D 宠物 / 字幕）")
         _gpus, _gpu_idx = [], -1
         try:
             import gpu_select
@@ -2750,6 +2822,12 @@ def _ensure_std_streams():
     pythonw.exe 没有控制台：sys.stdout / sys.stderr 是 None，任何 print 都会抛异常。
     这里把输出重定向到 logs/console-app.log（用户要求启动时不要黑框）。
     """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
     if sys.stdout is not None and sys.stderr is not None:
         return
     try:
@@ -2776,7 +2854,8 @@ def main():
     try:
         import singleton
         if not singleton.acquire("SvwbConsole"):
-            print("控制台已经在运行")
+            request_console_show()
+            print("控制台已经在运行，正在显示现有窗口")
             return 0
     except Exception:
         pass
@@ -2797,6 +2876,10 @@ def main():
     except Exception:
         pass
     app = App(root)
+    def startup_ready():
+        elapsed = time.perf_counter() - globals().get("_launch_started", time.perf_counter())
+        print("控制台已就绪：%.3f 秒" % max(0, elapsed), flush=True)
+    root.after_idle(startup_ready)
     root.mainloop()
     try:
         import atexit, parent_guard

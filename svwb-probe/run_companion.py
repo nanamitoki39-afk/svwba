@@ -93,44 +93,13 @@ if _requests_missing:
     c._dep_warned = True
 
 
-def _ensure_frida():
-    """游戏在、但 logs/deck_live.json 不新鲜时，启动 frida_live。"""
-    try:
-        import importlib.util
-        if singleton.frida_running():
-            return
-        import shadow_warchess_reader as RW
-        pid, image = RW.find_game_pid()
-        if not pid:
-            return
-        p = os.path.join(HERE, "logs", "deck_live.json")
-        fresh = False
-        try:
-            fresh = (time.time() - os.path.getmtime(p)) < 30
-        except Exception:
-            fresh = False
-        if fresh:
-            return
-        international = os.path.basename(image).lower() in ("shadowversewb.exe", "shadowverseworldsbeyond.exe")
-        if not international and importlib.util.find_spec("frida") is None:
-            return
-        script = "international_reader.py" if international else "frida_live.py"
-        args = ["--pid", str(pid)] if international else [str(pid), "7200"]
-        log = open(os.path.join(HERE, "logs", "frida_live.log"), "a",
-                   encoding="utf-8")
-        subprocess.Popen(
-            [sys.executable, "-u", os.path.join(HERE, script)] + args,
-            stdout=log, stderr=subprocess.STDOUT, cwd=HERE,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except Exception:
-        pass
-
-
+# Use the same asynchronous supervisor as the console. Never block the pet's
+# first frame on process discovery or create an independent duplicate reader.
+_reader_supervisor = None
 if AUTO_FRIDA:
-    try:
-        _ensure_frida()
-    except Exception:
-        pass
+    from reader_supervisor import ReaderSupervisor
+    _reader_supervisor = ReaderSupervisor(HERE, {})
+    w.root.after(0, _reader_supervisor.ensure)
 
 
 def tick():
@@ -157,5 +126,15 @@ def tick():
         pass
 
 
+# Closing the pet immediately disables the AI, before renderer shutdown.
+_close_pet = w.close
+def close_pet():
+    c.close()
+    _close_pet()
+w.close = close_pet
+w.root.protocol("WM_DELETE_WINDOW", close_pet)
 w.root.after(250, tick)
-w.run()
+try:
+    w.run()
+finally:
+    c.close()

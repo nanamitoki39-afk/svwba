@@ -377,15 +377,18 @@ def read_current(handle, profile):
         return _fail("玩家状态读取失败")
     hand, field = struct.unpack_from("<QQ", head, 16)
     turn = struct.unpack_from("<i", head, 0x38)[0]
-    board = memory.read_board(handle, player, struct.unpack_from("<Q", head)[0],
-                              hand, field, turn, include_hand=True)
-    if board is None or len(set(board["handUids"])) != len(board["handUids"]):
-        return _fail("手牌/场面读取失败")
-    # 服务器快照的手牌要等下一回合同步；UI 手牌视图是实时的，优先用它。
+    # Read the current displayed hand first. A transient/retained server hand
+    # must not prevent a valid UI hand (including an empty hand) from publishing.
     view_hand = read_hand_view(handle, view)
+    board = memory.read_board(handle, player, struct.unpack_from("<Q", head)[0],
+                              hand, field, turn, include_hand=view_hand is None)
+    if board is None:
+        return _fail("手牌/场面读取失败")
     if view_hand is not None:
         board["hand"] = [cid for _uid, cid in view_hand]
         board["handUids"] = [uid for uid, _cid in view_hand]
+    if len(set(board["handUids"])) != len(board["handUids"]):
+        return _fail("手牌实例重复")
     log = struct.unpack_from("<Q", head, 112)[0]
     count = memory.read_i32(handle, log + 24) if log else None
     if count is None or not 0 <= count <= 200:
@@ -485,13 +488,7 @@ def select_view(handle, candidates, hint=None):
                        sort_keys=True) for _, sample in valid}
     if len(keys) == 1:
         return valid[0][0]
-    if hint:
-        # 多个状态不同的候选：优先离上一局地址最近的（新对局通常分配在附近）。
-        valid.sort(key=lambda ps: _range_distance((int(ps[0]["view"], 16), 1), hint))
-    else:
-        valid.sort(key=lambda ps: ((ps[1].get("turn") or 0), (ps[1].get("at") or 0)),
-                   reverse=True)
-    return valid[0][0]
+    return None
 
 
 def live_read(pid, profile=None):
@@ -592,7 +589,7 @@ def live_read(pid, profile=None):
                     print("国际服 hand=%s deck=%s pp=%s" %
                           (sample["hand"], sample["deck"], sample["pp"]), flush=True)
                     last_key, written = key, time.monotonic()
-            time.sleep(0.1)
+            time.sleep(0.05)
     finally:
         memory.kernel32.CloseHandle(handle)
         ledger.clear_stop()

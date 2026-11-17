@@ -45,7 +45,7 @@ def _load_version():
         with open(p, encoding="utf-8") as fh:
             return "v" + fh.read().strip()
     except Exception:
-        return "v1.1.3"
+        return "v1.1.4"
 
 
 VERSION = _load_version()

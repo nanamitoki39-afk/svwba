@@ -65,6 +65,14 @@ PERSONALITIES = {
     "toxic": ("毒舌（慎用）", "吐槽尖锐简短，只针对本回合具体操作、费用或交换；吐槽后必须给可执行建议，不人身攻击、不骂脏话、不脱离场面泛泛辱骂。"),
 }
 
+# 每种性格的具体话术示例：让同样的建议用不同口吻说出来
+PERSONALITY_HINTS = {
+    "gentle": "说话示例：「别急着上，先把这个5费随从解掉，不然下回合要挨8点哦。」",
+    "lively": "说话示例：「冲！先解掉那个大怪，节奏就回来了！」",
+    "tsundere": "说话示例：「哼，才不是担心你被秒……那个5费随从先处理掉啦。」",
+    "toxic": "说话示例：「放着5攻不管，你是想下周再打？解了它。」",
+}
+
 _KNOW = {"data": None}
 
 
@@ -482,6 +490,21 @@ class Companion:
         self._deck_context = {"name": "", "cards": (), "class": ""}
         self.timing = {}
         self._http_session = None
+        self._closed = False
+
+    def close(self):
+        """Stop scene collection, invalidate queued replies and close HTTP."""
+        self._closed = True
+        self._generation += 1
+        self._context = None
+        self._hand = []
+        self._last = {}
+        session, self._http_session = self._http_session, None
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     # ---------------- 状态读取 ----------------
     def _live(self):
@@ -603,7 +626,12 @@ class Companion:
         hand_ids = [c for c in (snap.get("hand") or []) if c]
         threats = [u for u in enemy_field
                    if int(u.get("atk") or 0) >= 3 or int(u.get("life") or 0) >= 4]
-        removal_words = ("破坏", "消灭", "给予伤害", "对敌方随从")
+        # 解场牌判定：必须明确指向**敌方**随从，且不是「破坏自己」那种
+        ENEMY_REMOVE = ("敌方随从", "对手的随从", "对手场上", "对对手的战场",
+                        "破坏对手", "消灭对手", "对方随从", "对手方随从",
+                        "使敌方", "给予敌方随从")
+        SELF_REMOVE = ("自己的战场", "自己的随从", "该随从", "我方随从",
+                       "自己的卡牌", "返回手牌")
         playable_removal = []
         key_cards = []
         for cid in hand_ids:
@@ -613,27 +641,148 @@ class Companion:
             name = m.get("name") or _card_name(cid)
             if skill and pp is not None and cost <= pp:
                 key_cards.append("%s(%s费)%s" % (name, cost, skill[:18]))
-            if pp is not None and cost <= pp and any(word in skill for word in removal_words):
-                playable_removal.append(name)
+            if pp is not None and cost <= pp:
+                is_removal = any(w in skill for w in ENEMY_REMOVE) and \
+                    not any(w in skill for w in SELF_REMOVE)
+                if is_removal:
+                    playable_removal.append(name)
+
+        # ---- 斩杀判断：场攻 + 手牌直伤 >= 对手生命 ----
+        my_attack = sum(int(u.get("atk") or 0) for u in my_field)
+        try:
+            enemy_life = int(enemy.get("life") or 0)
+        except (TypeError, ValueError):
+            enemy_life = 0
+        hand_damage = 0
+        burst_cards = []
+        dmg_re = re.compile(r"(?:造成|给予)(\d+)点伤害")
+        # 伤害目标判定：只认打主战者的，打随从的不算斩杀
+        FACE_WORDS = ("主战者", "对手生命", "敌方英雄", "对方生命",
+                      "对对手造成", "对敌方造成")
+        MINION_WORDS = ("随从", "战场上的", "1个", "一个", "随机")
+        for cid in hand_ids:
+            m2 = card(cid)
+            skill2 = " ".join((m2.get("skill") or "").split())
+            cost2 = int(m2.get("cost") or 0)
+            if pp is not None and cost2 > pp:
+                continue
+            mm = dmg_re.search(skill2)
+            if mm:
+                # 看伤害出现位置前后 40 字符，判断打的是谁
+                around = skill2[max(0, mm.start() - 40): mm.end() + 40]
+                if any(w in around for w in MINION_WORDS):
+                    continue       # 打随从，不算脸伤
+                if not any(w in around for w in FACE_WORDS):
+                    continue       # 没明确说打脸，保守不算
+                n = int(mm.group(1))
+                hand_damage += n
+                burst_cards.append("%s(%d伤)" % (
+                    m2.get("name") or _card_name(cid), n))
+        lethal = enemy_life > 0 and hand_damage > 0 and \
+            (my_attack + hand_damage) >= enemy_life
+
+        # ---- 我方承伤风险 ----
+        enemy_attack = sum(int(u.get("atk") or 0) for u in enemy_field)
+        my_life = int(snap.get("life") or 20)
 
         advice = []
+        if lethal:
+            advice.append("能斩杀了：场攻%d + 手牌伤害%d（%s）≥ 对手生命%d" % (
+                my_attack, hand_damage, "、".join(burst_cards[:2]), enemy_life))
+        if enemy_attack >= my_life and my_life > 0:
+            advice.insert(0, "这回合不解场会死：对手场攻%d ≥ 我方生命%d" % (
+                enemy_attack, my_life))
+        elif enemy_attack >= 6 and my_life <= 10:
+            advice.insert(0, "血量危险（%d血/对手场攻%d），优先解场或架墙" % (
+                my_life, enemy_attack))
         if threats and playable_removal:
             target = max(threats, key=lambda u: int(u.get("atk") or 0))
-            advice.append("有够费解场牌%s，可考虑处理对手%s" %
-                          (playable_removal[0], _card_name(target.get("cardId"))))
+            t_name = _card_name(target.get("cardId"))
+            t_atk = int(target.get("atk") or 0)
+            t_life = int(target.get("life") or 0)
+            advice.append("用【%s】处理【%s】（%d/%d），不然下回合要挨%d点" % (
+                playable_removal[0], t_name, t_atk, t_life, t_atk))
         elif threats and my_field:
-            advice.append("对手有高威胁随从，评估交换并留意下回合承伤")
+            advice.append("对手有%d攻高威胁随从，考虑交换，别让血线崩" % max(
+                int(u.get("atk") or 0) for u in threats))
         elif threats:
-            advice.append("对手有威胁随从，留意守脸或等待解场")
-        if enemy_field:
-            enemy_attack = sum(int(u.get("atk") or 0) for u in enemy_field)
-            if enemy_attack >= 6 and int(snap.get("life") or 20) <= 10:
-                advice.insert(0, "我方血量低且对手场攻高，优先解场或守脸")
-        personality = PERSONALITIES.get(
-            self.cfg.get("personality") or "gentle", PERSONALITIES["gentle"])[1]
+            advice.append("对手有威胁随从，本回合优先守脸或找解场")
+        # ---- 参考欧丝 AI 建议的 7 类：Act / Attack / Evolve / Fusion /
+        #      ExtraPP / TurnEnd / Mulligan ----
+        focus = []   # [(优先级, 类型, 内容)]
+
+        # 1) Attack：斩杀
+        if lethal:
+            focus.append((100, "斩杀", "能斩杀了：场攻%d + 手牌伤害%d（%s）≥ 对手生命%d" % (
+                my_attack, hand_damage, "、".join(burst_cards[:2]), enemy_life)))
+        # 2) Attack：会被打死
+        if enemy_attack >= my_life and my_life > 0:
+            focus.append((98, "守脸", "这回合不解场会死：对手场攻%d ≥ 我方生命%d" % (
+                enemy_attack, my_life)))
+        # 3) Mulligan：换牌阶段
+        if turn is not None and int(turn) == 0 and not snap.get("mulliganDone"):
+            focus.append((95, "换牌", "换牌阶段：优先换掉高费卡，留低费起手"))
+        # 4) Attack：血线危险
+        elif enemy_attack >= 6 and my_life <= 10:
+            focus.append((90, "守脸", "血量危险（%d血/对手场攻%d），优先解场或架墙" % (
+                my_life, enemy_attack)))
+        # 5) Act：解场
+        if threats and playable_removal:
+            target2 = max(threats, key=lambda u: int(u.get("atk") or 0))
+            focus.append((85, "解场", "用【%s】处理【%s】（%d/%d），不然要挨%d点" % (
+                playable_removal[0], _card_name(target2.get("cardId")),
+                int(target2.get("atk") or 0), int(target2.get("life") or 0),
+                int(target2.get("atk") or 0))))
+
+        # 6) Evolve：手牌里有「进化时」收益的牌，且够费
+        evolve_cards = []
+        # 7) Fusion：手牌里有融合牌
+        fusion_cards = []
+        for cid in hand_ids:
+            m3 = card(cid)
+            sk = " ".join((m3.get("skill") or "").split())
+            nm = m3.get("name") or _card_name(cid)
+            cost3 = int(m3.get("cost") or 0)
+            if pp is not None and cost3 > pp:
+                continue
+            if "进化" in sk and ("进化时" in sk or "进化后" in sk):
+                evolve_cards.append(nm)
+            if "融合" in sk:
+                fusion_cards.append(nm)
+        if evolve_cards:
+            focus.append((55, "进化", "【%s】进化有额外效果，可以考虑进化" % evolve_cards[0]))
+        if fusion_cards:
+            focus.append((50, "融合", "【%s】可以融合，先融合再出更划算" % fusion_cards[0]))
+
+        # 8) TurnEnd：费用没用完但没牌可出 / 已经没有可行动作
+        if pp is not None and hand_ids:
+            playable_any = False
+            for cid in hand_ids:
+                m4 = card(cid)
+                if int(m4.get("cost") or 0) <= pp:
+                    playable_any = True
+                    break
+            if not playable_any and not my_field:
+                focus.append((40, "结束回合", "手上没够费的牌了，可以结束回合"))
+
+        # ExtraPP：pp 字段尚未验证，暂不生成建议（等 pp_verified 之后再开）
+
+        focus.sort(key=lambda x: -x[0])
+        if focus:
+            advice = ["[%s] %s" % (t, c) for _, t, c in focus[:2]]
+        else:
+            advice = []
+
+        _pkey = self.cfg.get("personality") or "gentle"
+        if _pkey not in PERSONALITIES:
+            _pkey = "gentle"
+        personality = PERSONALITIES[_pkey][1]
+        hint = PERSONALITY_HINTS.get(_pkey, "")
         lines = [
             "鲸鲸口吻：" + personality,
-            "只依据场面和手牌说一句；有具体建议时点名牌或目标，否则评论刚发生的事。",
+            hint,
+            "只依据场面和手牌说一句（40 字以内）；优先给可执行的操作建议"
+            "（出哪张牌、打哪个目标、为什么），没有具体建议时才评论刚发生的事。",
             "我方%s 费用%s/%s 生命%s；场上：%s。" % (
                 deck_context.get("class") or "", pp if pp is not None else "未知", maxpp if maxpp is not None else "未知", snap.get("life"), my_txt),
             "对手场上：%s；对手生命%s。" % (enemy_txt, enemy.get("life", "?")),
@@ -649,10 +798,10 @@ class Companion:
             lines.append("刚发生：" + "；".join(events[:1]))
         lines.append("卡牌效果只按括号里的描述说，别自己发明用途"
                      "（描述写回血就是回血，不能说过牌/斩杀）；护符没有攻击/生命面板，"
-                     "别给它编攻血；限 24 字，不编造事实；牌库数字是剩余张数，**不是洗回张数**；不给与当前局面无关的泛化建议。")
+                     "别给它编攻血；限 40 字，不编造事实；牌库数字是剩余张数，**不是洗回张数**；不给与当前局面无关的泛化建议。")
         return "\n".join(lines)
 
-    def _call_llm(self, prompt, timeout=(6, 20), max_tokens=28,
+    def _call_llm(self, prompt, timeout=(6, 20), max_tokens=48,
                   on_chunk=None, stream=True):
         """调用 OpenAI 兼容接口。
 
@@ -660,6 +809,8 @@ class Companion:
         · 陪玩用流式，测试 AI 用非流式，避免等完整 SSE；
         · 所有异常都写入 last_error，不再让后台线程静默死掉。
         """
+        if getattr(self, "_closed", False):
+            return None
         try:
             import requests
         except Exception as e:
@@ -715,6 +866,8 @@ class Companion:
             return None
 
         def _post(timeout_value, stream_value=None):
+            if getattr(self, "_closed", False):
+                raise RuntimeError("AI 陪玩已关闭")
             if stream_value is None:
                 stream_value = bool(stream)
             return session.post(url, json=payload, timeout=timeout_value,
@@ -726,7 +879,7 @@ class Companion:
                 r = _post(timeout)
             except Exception as e:
                 # 只有连接类错误才换 IPv4 重试；读超时重试只会越等越久。
-                retry = (exc is not None and isinstance(
+                retry = (not getattr(self, "_closed", False) and exc is not None and isinstance(
                     e, (exc.ConnectTimeout, exc.ConnectionError)))
                 if not retry:
                     raise
@@ -764,6 +917,8 @@ class Companion:
                     on_chunk(_named_reply(result))
             else:
                 for raw in r.iter_lines(chunk_size=1, decode_unicode=True):
+                    if getattr(self, "_closed", False):
+                        return None
                     if not raw:
                         continue
                     if isinstance(raw, bytes):
@@ -930,6 +1085,8 @@ class Companion:
 
     # ---------------- 主循环 ----------------
     def tick(self):
+        if getattr(self, "_closed", False):
+            return
         # 配置仅在文件变更时重读，避免每 2 秒重复解析磁盘文件。
         try:
             mt = os.path.getmtime(CONFIG_PATH)

@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-打包脚本 —— 生成 v0.1.0 发行包。
+打包脚本 —— 生成 v1.1.4 发行包。
 
 用法：
     python build_package.py [输出目录]
     默认输出到 D:\\download
 
 产物：
-    <输出目录>\\影之幻境助手-v0.1.0\\        解压目录
-    <输出目录>\\影之幻境助手-v0.1.0.zip      压缩包
+    <输出目录>\\影之幻境助手-v1.1.4\\        解压目录
+    <输出目录>\\影之幻境助手-v1.1.4.zip      压缩包
 
 **不包含**：训练图片、训练数字样本、调试脚本、研究脚本。
 """
 import os
+import ast
+import tempfile
 import shutil
 import sys
 import zipfile
@@ -22,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
 GAME = os.path.join(PKG, "dsh-shadowverse-huanjing")
 
-VERSION = "v1.1.3"
+VERSION = "v1.1.4"
 NAME = f"影之诗助手-{VERSION}"
 EN_NAME = f"svwba-{VERSION}"      # 英文名（导出/上传用）
 
@@ -92,15 +94,37 @@ ASSET_FILES = ["icon.png", "icon.ico"]
 
 DOC_FILES = {"_使用说明_v010.txt": "使用说明.txt",
              "_收集诊断信息_v010.bat": "收集诊断信息.bat",
-             "_更新记录.md": "更新记录.md",
              "_修复环境_v010.bat": "修复环境.bat",
              "_启动_v010.bat": "启动.bat"}
 
 
+def runtime_files():
+    """Include local runtime imports, including imports inside UI callbacks."""
+    files = set(PROBE_FILES) | {"launch.ps1", "launch.vbs", "startup_bootstrap.py", "subtitle_bitmap.py", "subtitle_overlay.py"}
+    pending = [name for name in files if name.endswith(".py")]
+    while pending:
+        name = pending.pop()
+        path = os.path.join(HERE, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8-sig") as source:
+            tree = ast.parse(source.read(), filename=path)
+        for node in ast.walk(tree):
+            names = [a.name for a in node.names] if isinstance(node, ast.Import) else ([node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+            for module in names:
+                dependency = module.split(".")[0] + ".py"
+                if dependency not in files and os.path.isfile(os.path.join(HERE, dependency)):
+                    files.add(dependency)
+                    pending.append(dependency)
+    return sorted(files)
+
+
 def build(outdir):
     target = os.path.join(outdir, NAME)
-    if os.path.isdir(target):
-        shutil.rmtree(target)
+    if os.path.realpath(target) == os.path.realpath(PKG):
+        raise ValueError("不能把当前安装目录作为打包输出目录，请选择其他空目录")
+    if os.path.exists(target):
+        raise FileExistsError("输出目录已存在，为保护配置不覆盖：" + target)
     dirs = [
         os.path.join(target, "svwb-probe", "assets"),
         os.path.join(target, "svwb-probe", "logs"),
@@ -123,7 +147,7 @@ def build(outdir):
             return
         shutil.copy2(src, dst)
 
-    for f in PROBE_FILES:
+    for f in runtime_files():
         copy(os.path.join(HERE, f), os.path.join(target, "svwb-probe", f))
     for f in ASSET_FILES:                      # 图标资源
         copy(os.path.join(HERE, "assets", f),
@@ -140,7 +164,8 @@ def build(outdir):
         _src = os.path.join(HERE, _d)
         _dst = os.path.join(target, "svwb-probe", _d)
         if os.path.isdir(_src):
-            shutil.copytree(_src, _dst, dirs_exist_ok=True)
+            shutil.copytree(_src, _dst, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("card-art", "__pycache__", "imported_fonts.json"))
 
     for f in LIB_FILES:
         copy(os.path.join(GAME, "lib", f),
@@ -159,7 +184,12 @@ def build(outdir):
         copy(os.path.join(GAME, "tools", "extracted", f),
              os.path.join(target, "dsh-shadowverse-huanjing", "tools", "extracted", f))
     for src, dst in DOC_FILES.items():
-        copy(os.path.join(HERE, src), os.path.join(target, dst))
+        current = os.path.join(PKG, dst)
+        copy(current if os.path.isfile(current) else os.path.join(HERE, src), os.path.join(target, dst))
+    copy(os.path.join(PKG, "一键出狱.exe"), os.path.join(target, "一键出狱.exe"))
+    bundled_node = os.path.join(PKG, "node")
+    if os.path.isdir(bundled_node):
+        shutil.copytree(bundled_node, os.path.join(target, "node"))
 
     # 运行时会写文件的目录占位
     for d in ("svwb-probe/logs", "svwb-probe/hero-portraits",
@@ -191,6 +221,10 @@ def build(outdir):
             except OSError:
                 pass
 
+    for name in ("python-path.txt", "node-path.txt", ".env-ready.json", ".startup-ready.json"):
+        hint = os.path.join(target, "svwb-probe", name)
+        if os.path.isfile(hint):
+            os.remove(hint)
     return target, missing
 
 
@@ -216,14 +250,22 @@ def write_python_path(target):
 
 def make_zip(target, outdir):
     zpath = os.path.join(outdir, NAME + ".zip")
-    if os.path.isfile(zpath):
-        os.remove(zpath)
-    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for dirpath, _dirs, files in os.walk(target):
-            for fn in files:
-                fp = os.path.join(dirpath, fn)
-                arc = os.path.join(NAME, os.path.relpath(fp, target))
-                z.write(fp, arc)
+    fd, temporary = tempfile.mkstemp(prefix=".assistant-package-", suffix=".zip", dir=outdir)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            for dirpath, _dirs, files in os.walk(target):
+                for fn in files:
+                    fp = os.path.join(dirpath, fn)
+                    arc = os.path.join(NAME, os.path.relpath(fp, target))
+                    z.write(fp, arc)
+        with zipfile.ZipFile(temporary) as check:
+            if check.testzip() is not None:
+                raise OSError("压缩包校验失败")
+        os.replace(temporary, zpath)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
     return zpath
 
 

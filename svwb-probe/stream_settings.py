@@ -8,8 +8,12 @@ FILE = Path(__file__).resolve().parent.parent / "dsh-shadowverse-huanjing/shots/
 
 def watch(root, change):
     previous = None
+    timer = None
+    closed = False
     def refresh():
-        nonlocal previous
+        nonlocal previous, timer
+        if closed:
+            return
         try:
             enabled = bool(json.loads(FILE.read_text(encoding="utf-8-sig")).get("liveMode"))
         except FileNotFoundError:
@@ -21,8 +25,22 @@ def watch(root, change):
                 change(enabled)
                 previous = enabled
         finally:
-            root.after(600, refresh)
-    root.after_idle(refresh)
+            if not closed:
+                timer = root.after(600, refresh)
+    def stop(event=None):
+        nonlocal closed, timer
+        if event is not None and event.widget is not root:
+            return
+        closed = True
+        if timer is not None:
+            try:
+                root.after_cancel(timer)
+            except Exception:
+                pass
+            timer = None
+    root.bind("<Destroy>", stop, add="+")
+    timer = root.after_idle(refresh)
+    return stop
 
 
 def capture_style(window):

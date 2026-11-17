@@ -52,6 +52,10 @@ $PyInstallerUrl = 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.
 $PyMirrorUrl = 'https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-amd64.exe'
 $NodeZipMirror = 'https://npmmirror.com/mirrors/node'
 $DepsCheck = Join-Path $Probe 'deps_check.py'
+# Explicit repair invalidates the fast-launch cache before installing dependencies.
+if ($Force -or $RepairFrida) {
+    Remove-Item -LiteralPath (Join-Path $Probe '.startup-ready.json') -Force -ErrorAction SilentlyContinue
+}
 
 # 运行依赖：mod = Python 导入名，pkg = pip 包名，core = 缺了主程序不能跑。
 # 注意：frida 是记牌器实时读取的核心，pygame/OpenGL/live2d 是 AI 陪玩的核心；
@@ -157,12 +161,25 @@ function Download($urls, $out) {
 }
 
 # ── Python ──────────────────────────────────────────────────────────────
+function Read-RuntimePath($file) {
+    # Accept both historical ANSI files and user-supplied UTF-8 paths.
+    foreach ($encoding in @('UTF8', 'Default')) {
+        try {
+            $candidate = (Get-Content -LiteralPath $file -TotalCount 1 -Encoding $encoding).Trim().Trim('"')
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+        } catch { }
+    }
+    return $null
+}
+
 function Get-PyVersion($exe, $pre) {
     # ⚠️ 不用 `-c "import sys;print('%d.%d.%d'%...)"`：
     #    PowerShell 5.1 往原生 exe 传参时会把 -c 里的**双引号吃掉**，
     #    Python 直接 SyntaxError 退出 1 → 被误判成"没有 Python"。
     #    改成 `-V`（输出 "Python 3.12.14"），不涉及任何引号。
     if (-not $exe) { return $null }
+    # Do not install application packages into another tool's private runtime.
+    if ($exe -match '[\\/]\.dsh[\\/]dsh-runtimes[\\/]') { return $null }
     if (-not (Test-Path -LiteralPath $exe)) { return $null }
     $ver = $null
     try {
@@ -194,7 +211,7 @@ function Find-Python {
     # ① python-path.txt（用户手动指定过，或上次自动装好后写进去的）
     if (Test-Path -LiteralPath $PyPath) {
         try {
-            $c = (Get-Content -LiteralPath $PyPath -TotalCount 1).Trim().Trim('"')
+            $c = (Read-RuntimePath $PyPath)
             if ($c) {
                 $v = Get-PyVersion $c $null
                 if ($v) { return [pscustomobject]@{ exe = $c; pre = @(); version = $v; from = 'python-path.txt' } }
@@ -283,13 +300,14 @@ function Get-NodeVersion($exe) {
 
 function Find-Node {
     # ① 随包 node\node.exe（安装器解压到这）
-    $localNode = Join-Path $NodeDir 'node.exe'
-    $v = Get-NodeVersion $localNode
-    if ($v) { return [pscustomobject]@{ exe = $localNode; version = $v; from = '随包 node\' } }
+    foreach ($localNode in @((Join-Path $NodeDir 'node.exe'), (Join-Path $Root 'node\node.exe'))) {
+        $v = Get-NodeVersion $localNode
+        if ($v) { return [pscustomobject]@{ exe = $localNode; version = $v; from = '随包 node\' } }
+    }
     # ② node-path.txt
     if (Test-Path -LiteralPath $NodePath) {
         try {
-            $c = (Get-Content -LiteralPath $NodePath -TotalCount 1).Trim().Trim('"')
+            $c = (Read-RuntimePath $NodePath)
             $v = Get-NodeVersion $c
             if ($v) { return [pscustomobject]@{ exe = $c; version = $v; from = 'node-path.txt' } }
         } catch { }
@@ -532,9 +550,10 @@ if ($Quick) {
     if (-not $qnode) { exit 1 }
     # 依赖库合并成一次检查（--spec 只查是否安装，不 import，约几十毫秒）。
     if (-not (Test-Path -LiteralPath $DepsCheck)) { exit 1 }
-    $qmissing = @(Get-MissingDeps $qpy @('--spec'))
+    $qmissing = @(Get-MissingDeps $qpy @('--spec', '--startup'))
     if ($qmissing.Count -gt 0) { exit 1 }
     Save-PythonPath $qpy
+    [IO.File]::WriteAllText($NodePath, $qnode.exe, (New-Object Text.UTF8Encoding($false)))
     exit 0
 }
 
@@ -547,7 +566,7 @@ $pairRequested = $Force -or $RepairFrida
 $pairReport = Join-Path $Root 'Frida配对说明.txt'
 if ($pairRequested) {
     $osArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-    @("影之诗助手 v1.1.2 · Frida 配对说明", "Windows：$([Environment]::OSVersion.VersionString)；架构：$osArch",
+    @("影之诗助手 v1.1.4 · Frida 配对说明", "Windows：$([Environment]::OSVersion.VersionString)；架构：$osArch",
       "尚未完成 Python 检查。若自动安装失败，请在支持 x64 的 Windows 上安装 CPython 3.12 (64-bit)。",
       "下载：https://www.python.org/downloads/windows/", "装好后再次双击「修复环境.bat」。") |
         Set-Content -LiteralPath $pairReport -Encoding UTF8

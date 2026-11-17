@@ -1,0 +1,89 @@
+{
+  "author": "阁下为何放毒",
+  "platform": "bilibili",
+  "video_url": "https://www.bilibili.com/video/BV1YrsQ6YE9T/",
+  "author_url": "https://space.bilibili.com/28672192/",
+  "title": "影之诗卡牌台词翻译-涅格尔赫亚弑神事件篇",
+  "authorization_status": "authorized",
+  "authorization_basis": "user_declaration",
+  "authorization_recorded_date": "2026-11-12",
+  "dialogue_imported": true,
+  "event_count": 3709,
+  "source_line_count": 3420,
+  "coverage": "已收录八篇来源视频中经校对且与当前游戏语音包匹配的台词；无法确认的条目暂不触发，详见覆盖检查。",
+  "reviewed_line_count": 3420,
+  "pending_line_count": 0,
+  "sources": [
+    {
+      "bvid": "BV1YrsQ6YE9T",
+      "title": "影之诗卡牌台词翻译-涅格尔赫亚弑神事件篇",
+      "event_count": 391
+    },
+    {
+      "bvid": "BV1T2tw6oERR",
+      "title": "复苏的阿兹弗特篇",
+      "event_count": 419,
+      "reviewed_lines": 372,
+      "confirmed_lines": 372,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV18Tby67ERh",
+      "title": "命运编年史篇",
+      "event_count": 582,
+      "reviewed_lines": 581,
+      "confirmed_lines": 581,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV1ZYgK6gEY1",
+      "title": "苍穹六龙篇",
+      "event_count": 591,
+      "reviewed_lines": 508,
+      "confirmed_lines": 508,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV1w6BDBkEke",
+      "title": "灾杰的继承者篇",
+      "event_count": 446,
+      "reviewed_lines": 383,
+      "confirmed_lines": 383,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV16S96BmELm",
+      "title": "天启契约篇",
+      "event_count": 369,
+      "reviewed_lines": 358,
+      "confirmed_lines": 358,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV1CR8qzKEWV",
+      "title": "一弹异画及基础卡",
+      "event_count": 216,
+      "reviewed_lines": 216,
+      "confirmed_lines": 216,
+      "pending_lines": 0
+    },
+    {
+      "bvid": "BV1oQb1z5ECQ",
+      "title": "传说揭幕篇",
+      "event_count": 695,
+      "reviewed_lines": 647,
+      "confirmed_lines": 647,
+      "pending_lines": 0
+    }
+  ],
+  "strict_review": {
+    "native_voice_events": 3709,
+    "source_caption_groups": 3420,
+    "manual_title_cases": 67,
+    "manual_speech_exception_frames": 85,
+    "original_entry_corrections": 2,
+    "source_subtitle_errors_corrected": 2,
+    "method": "视频卡名与中日字幕、原生语音包及视频音轨比对；全量语音识别辅助定位，异常画面人工复核",
+    "live_game_verified": false
+  }
+}

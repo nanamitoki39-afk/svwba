@@ -63,12 +63,13 @@ def local_reader_ok():
 
 def main(argv):
     spec_only = "--spec" in argv
+    startup = "--startup" in argv
     strict = not spec_only
     names = [a for a in argv if not a.startswith("--")] or DEFAULT_MODULES
     missing = []
     for name in names:
         try:
-            if spec_only and name == "frida":
+            if spec_only and name == "frida" and not startup:
                 if not local_reader_ok():
                     missing.append(name)
                 continue
@@ -80,7 +81,7 @@ def main(argv):
                 # 0.4.x 的顶层 live2d 是空包（只有 live2d.v2/v3），
                 # pet_view.py 需要 1.0.0 才有的 live2d.Model。
                 if name == "frida":
-                    if mod.__version__ not in SUPPORTED or mod.get_local_device().type != "local":
+                    if mod.__version__ not in SUPPORTED or (not startup and mod.get_local_device().type != "local"):
                         missing.append(name)
                 if name == "live2d" and not hasattr(mod, "Model"):
                     missing.append(name)

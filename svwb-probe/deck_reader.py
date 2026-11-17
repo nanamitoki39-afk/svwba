@@ -21,7 +21,6 @@ import struct
 import sys
 import time
 
-import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -53,6 +52,15 @@ ARRAY_DATA_OFF = 0x20
 _CACHE = {"state": 0, "deck": 0, "deck_ids": [], "at": 0.0}
 _DECK_FILE_CACHE = {"key": None, "decks": [], "active": ""}
 _DECK_FILE_LOCK = threading.RLock()
+
+
+def _array_tools():
+    # Normal JSON-based tracking never needs NumPy or its BLAS worker pools.
+    # Legacy scans use vector operations, not parallel matrix multiplication.
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(name, "1")
+    import numpy
+    return numpy
 
 
 def load_names():
@@ -326,6 +334,7 @@ def _read_state(h, RW, p):
 
 
 def _scan_state(h, RW, budget=64 << 30):
+    np = _array_tools()
     total = 0
     cands = []
     for base, size in RW.regions(h):
@@ -356,6 +365,7 @@ def _scan_state(h, RW, budget=64 << 30):
 
 
 def _scan_deck(h, RW, ids, budget=64 << 30):
+    np = _array_tools()
     out = []
     total = 0
     for base, size in RW.regions(h):
@@ -413,6 +423,7 @@ def _find_state(h, RW):
 
 def _scan_deck_runs(h, RW, ids, min_run=30, max_gap=2):
     """暴力扫描：找内存里连续（允许小间隔）30+ 个合法卡表 id 的序列。"""
+    np = _array_tools()
     try:
         ids_arr = np.array(sorted(int(k) for k in ids), dtype=np.int32)
     except Exception:

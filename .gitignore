@@ -1,4 +1,4 @@
-# ===== 游戏解包 / 反编译内容（禁止上传）=====
+# ===== 本地资源 =====
 mastermemory.bytes
 *Mastermemory.bytes
 sv_card_meta.json
@@ -29,3 +29,32 @@ pet_config.json
 .env
 ai_settings.json
 *.log
+
+# Local launch hints, temporary output and credentials
+python-path.txt
+node-path.txt
+.env-ready.json
+.startup-ready.json
+*.bytes.*
+*.zip
+*.zip.*
+*.old
+*.tmp
+*_token*
+*.pem
+*.key
+
+HANDOFF.md
+*.bak*
+
+# Source-only upload: local data, generated game metadata, development records
+*更新记录*
+*更新日志*
+CHANGELOG*
+*.exe
+*.cs
+svwb-probe/gamedata/*
+!svwb-probe/gamedata/card_subtitle_source.json
+dsh-shadowverse-huanjing/lib/knowledge/*.json
+svwb-probe/parse_master.py
+svwb-probe/dnmeta.py

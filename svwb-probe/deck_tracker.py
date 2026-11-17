@@ -44,7 +44,7 @@ WINDOW_SETTINGS = os.path.join(HERE, "logs", "tracker-window.json")
 def window_settings():
     import json
     import io
-    defaults = dict(width=360, height=460, font=9, auto=True, locked=False)
+    defaults = dict(width=360, height=460, font=9, auto=True, locked=False, show_public=True, show_played=True)
     try:
         with io.open(WINDOW_SETTINGS, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -52,6 +52,8 @@ def window_settings():
             defaults[key] = max(low, min(high, int(data.get(key, defaults[key]))))
         defaults["locked"] = data.get("locked") is True
         defaults["auto"] = data.get("auto", True) is True
+        for key in ("show_public", "show_played"):
+            defaults[key] = data.get(key, True) is True
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return defaults
@@ -234,6 +236,8 @@ class DeckTracker:
             self._hide_system_frame()
         import stream_settings
         stream_settings.watch(self.root, self._stream_mode)
+        import subtitle_source
+        self.card_subtitles = subtitle_source.ensure_window(self.root)
         self._create_public_window()
         self.poll()
 
@@ -442,9 +446,15 @@ class DeckTracker:
                 self._next_read = now + 1.0
                 self._snapshot_busy = True
         # 后台线程只写入结果，所有 Tk 调用都由主线程完成。
-        self._after = self.root.after(25, self.poll)
+        self._after = self.root.after(15, self.poll)
         if start:
-            threading.Thread(target=self._read_snapshot_worker, daemon=True).start()
+            try:
+                threading.Thread(target=self._read_snapshot_worker, daemon=True).start()
+            except RuntimeError as exc:
+                with self._snapshot_lock:
+                    self._snapshot_busy = False
+                self._next_read = time.monotonic() + .5
+                print("记牌器快照线程暂不可用，将重试：", exc)
         if ready is not None:
             self._apply_snapshot(ready)
 
@@ -726,7 +736,7 @@ class DeckTracker:
             hand_status = "手牌 %d" % len(hand) if hand_ready else "等待换牌确认"
             self.status_text.config(text="牌库剩余 %d · %s" % (remaining, hand_status))
 
-        show_played = bool(hand_ready and not self._pre_battle)
+        show_played = bool(self.options.get("show_played", True) and hand_ready and not self._pre_battle)
         played_by_name = {}
         for raw_id, count in (snap.get("playedFromHand") or {}).items():
             cid = int(raw_id)
@@ -736,7 +746,7 @@ class DeckTracker:
             played_by_name[label][1] += count
         played_items = sorted(played_by_name.values(), key=lambda item: sort_key(item[0]))
         import opponent_public
-        show_public = bool(hand_ready and not self._pre_battle)
+        show_public = bool(self.options.get("show_public", True) and hand_ready and not self._pre_battle)
         public_ready = bool(show_public and snap.get("opponentPublicHandReady"))
         public_by_name = {}
         for cid, count in opponent_public.public_counts(snap).items() if public_ready else []:
@@ -964,7 +974,21 @@ class DeckTracker:
 
     # ---------------- 关闭 ----------------
     def close(self):
-        self.card_art.close()
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        # The voice reader owns a process handle and a background thread.
+        # Destroying Tk alone does not stop either of them.
+        subtitles = getattr(self, "card_subtitles", None)
+        if subtitles is not None and getattr(subtitles, "_stream_enabled", False) is not True:
+            try:
+                subtitles.close()
+            except Exception as exc:
+                print("字幕关闭异常：", exc)
+        try:
+            self.card_art.close()
+        except Exception as exc:
+            print("卡图关闭异常：", exc)
         _OPEN[0] = None
         try:
             if getattr(self, "_public_win", None) is not None:
@@ -1010,9 +1034,11 @@ def open(master=None):
     try:
         w.__init__(master)
     except Exception:
-        for name in ("card_art",):
+        for name in ("card_subtitles", "card_art"):
             component = getattr(w, name, None)
             if component is not None:
+                if name == "card_subtitles" and getattr(component, "_stream_enabled", False) is True:
+                    continue
                 try:
                     component.close()
                 except Exception:

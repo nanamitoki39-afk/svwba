@@ -50,7 +50,7 @@ JS = r"""
 
 
 def main():
-    sys.path.insert(0, r"D:/download/影之诗助手-v1.1.2/svwb-probe")
+    sys.path.insert(0, r"D:/download/影之诗助手-v1.1.4/svwb-probe")
     import shadow_warchess_reader as RW
     pid, _ = RW.find_game_pid()
     print("游戏 pid:", pid)

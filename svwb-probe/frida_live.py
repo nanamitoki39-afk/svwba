@@ -360,10 +360,15 @@ JS = r"""
       var it = Memory.alloc(Process.pointerSize), m;
       while (!(m = classGetMethods(k, it)).isNull()) {
         let method = methodGetName(m).readUtf8String();
-        if (["ImmediateUpdate","AddHand","RemoveHand","GetHandCards"].indexOf(method) < 0) continue;
+        if (["Update","UpdateView","ImmediateUpdate","AddHand","RemoveHand","GetHandCards"].indexOf(method) < 0) continue;
         Interceptor.attach(m.readPointer(), {onEnter: function(args) {
           if (stopped || battleEnded) return;
-          handView = args[0];
+          // Shared native method bodies may also receive other classes.
+          // Never replace a valid display owner with an unrelated object.
+          try {
+            if (args[0].isNull() || !objClass(args[0]).equals(viewClass)) return;
+          } catch (e) { return; }
+          handView = ptr(args[0].toString());
           if (method === "ImmediateUpdate") {
             try { acceptViewRoot(args[1]); } catch (e) { }
           }
@@ -662,7 +667,8 @@ JS = r"""
         maxpp: me.add(0x38).readS32(),
         returnCounts: returnCounts, playedFromHand: playedFromHand,
         hand: displayed ? displayed.ids : (ready && !externalHand ? readArr(handPtr, "hand", uids) : []),
-        publicView: displayed ? handView.toString() : null,
+        // Public opponent cards do not depend on a stable ally-hand animation.
+        publicView: ready && handView && objClass(handView).equals(viewClass) ? handView.toString() : null,
         handSource: displayed ? "visible" : "snapshot",
         handUids: displayed ? displayed.uids : uids, handDepartures: handDepartures,
         externalHand: externalHand,
@@ -776,7 +782,7 @@ JS = r"""
       }
     } catch (e) {}
   }});
-  var timer = setInterval(sample, 150);
+  var timer = setInterval(sample, 75);
   send({hooked: true});
   rpc.exports = {stop: function() {
     stopped = true;
@@ -1250,7 +1256,7 @@ def main():
             import opponent_public
             public_view = p.pop("publicView", None)
             p.update(opponent_public.read_snapshot(board_handle, int(public_view, 16))
-                     if public_view and p.get("handReady") else
+                     if public_view else
                      {"opponentPublicHand": [], "opponentPublicHandReady": False})
             # 爆牌 / 洗回统计
             if not deck_captured:

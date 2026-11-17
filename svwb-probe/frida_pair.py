@@ -45,7 +45,7 @@ def usable():
 def main():
     platform_tag = sysconfig.get_platform()
     current = installed_version()
-    lines = ["影之诗助手 v1.1.3 · Frida 配对说明",
+    lines = ["影之诗助手 v1.1.4 · Frida 配对说明",
              f"Windows：{platform.platform()}",
              f"操作系统架构：{os.environ.get('PROCESSOR_ARCHITEW6432') or os.environ.get('PROCESSOR_ARCHITECTURE', '未知')}",
              f"助手使用的 Python：{sys.executable}",

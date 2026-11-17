@@ -97,13 +97,14 @@ def adopt_reader(here):
     created = creation_time(pid)
     if not created or (expected is not None and created != expected):
         return None
-    command = ("Get-CimInstance Win32_Process -Filter 'ProcessId=%d' | "
+    command = ("[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); "
+               "Get-CimInstance Win32_Process -Filter 'ProcessId=%d' | "
                "Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress") % pid
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
                                 capture_output=True, timeout=8,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        raw = result.stdout.decode("utf-8-sig", errors="replace").strip()
+        raw = result.stdout.decode("utf-8-sig").strip()
         # PowerShell's native redirected stdout can use the system code page.
         try:
             line = json.loads(raw)
@@ -161,7 +162,13 @@ class ReaderSupervisor:
                 self.message("记牌器：读取器检查失败：%s" % exc)
             finally:
                 self.gate.release()
-        threading.Thread(target=work, name="reader-supervisor", daemon=True).start()
+        try:
+            threading.Thread(target=work, name="reader-supervisor", daemon=True).start()
+        except (RuntimeError, OSError) as exc:
+            # Thread creation can fail under resource pressure. Do not leave
+            # the gate permanently held, otherwise every future check skips.
+            self.gate.release()
+            self.message("记牌器：检查线程启动失败，下次检查将重试：%s" % exc)
 
     def check(self):
         import singleton
@@ -213,6 +220,10 @@ class ReaderSupervisor:
         if not international and importlib.util.find_spec("frida") is None:
             self.message("记牌器：缺少 Frida，请运行修复环境.bat")
             return
+        # Recheck just before spawning, after the potentially slow ownership check.
+        if singleton.frida_running():
+            return
+        (logs / "_frida.stop").unlink(missing_ok=True)
         script = "international_reader.py" if international else "frida_live.py"
         arguments = ["--pid", str(pid)] if international else [str(pid), "7200"]
         with (logs / "frida_live.log").open("a", encoding="utf8") as output:
